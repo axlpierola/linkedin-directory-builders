@@ -3,6 +3,7 @@ from aws_cdk import (
     RemovalPolicy,
     CfnOutput,
     Duration,
+    Tags,
     aws_dynamodb as dynamodb,
     aws_s3 as s3,
     aws_cloudfront as cloudfront,
@@ -11,6 +12,7 @@ from aws_cdk import (
     aws_apigateway as apigateway,
     aws_wafv2 as wafv2,
     aws_iam as iam,
+    aws_certificatemanager as acm,
 )
 from constructs import Construct
 
@@ -18,6 +20,11 @@ class SpaDirectoryStack(Stack):
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # Stack-level tags (inherited by all resources)
+        Tags.of(self).add("Project", "directory-aws-latam")
+        Tags.of(self).add("Environment", "prod")
+        Tags.of(self).add("Cost-Center", "aws-program-builder")
 
         # 1. DynamoDB Table
         table = dynamodb.Table(
@@ -27,6 +34,7 @@ class SpaDirectoryStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
             time_to_live_attribute="ttl"
         )
+        Tags.of(table).add("Name", "database-directory-aws-latam")
 
         # 1b. GSI for email lookups
         table.add_global_secondary_index(
@@ -42,11 +50,15 @@ class SpaDirectoryStack(Stack):
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.S3_MANAGED
         )
+        Tags.of(website_bucket).add("Name", "frontend-hosting-directory-aws-latam")
 
         # 3. CloudFront Distribution
-        # OAC (Origin Access Control) is preferred over OAI, but S3Origin handles OAI by default.
-        # For simplicity and standard CDK patterns, we'll use standard S3Origin which sets up OAI/OAC.
-        
+        # Import existing ACM certificate for custom domain
+        certificate = acm.Certificate.from_certificate_arn(
+            self, "SiteCertificate",
+            "arn:aws:acm:us-east-1:057563282754:certificate/8a1f03d7-87aa-4f90-b4d9-d38a92e10ec8"
+        )
+
         distribution = cloudfront.Distribution(
             self, "WebsiteDistribution",
             default_behavior=cloudfront.BehaviorOptions(
@@ -55,6 +67,9 @@ class SpaDirectoryStack(Stack):
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD,
                 cached_methods=cloudfront.CachedMethods.CACHE_GET_HEAD,
             ),
+            domain_names=["awsbuilder.dev"],
+            certificate=certificate,
+            minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
             default_root_object="index.html",
             error_responses=[
                 cloudfront.ErrorResponse(
@@ -122,6 +137,7 @@ class SpaDirectoryStack(Stack):
         
         cfn_distribution = distribution.node.default_child
         cfn_distribution.web_acl_id = waf.attr_arn
+        Tags.of(distribution).add("Name", "cdn-directory-aws-latam")
 
 
         # 5. Lambda Function
@@ -137,6 +153,7 @@ class SpaDirectoryStack(Stack):
                 "CAPTCHA_SECRET_KEY": "placeholder-captcha-key"
             }
         )
+        Tags.of(backend_lambda).add("Name", "api-backend-directory-aws-latam")
 
         # Grant Lambda permissions to write to DynamoDB
         table.grant_read_write_data(backend_lambda)
@@ -159,6 +176,7 @@ class SpaDirectoryStack(Stack):
                 allow_methods=apigateway.Cors.ALL_METHODS
             )
         )
+        Tags.of(api).add("Name", "rest-api-directory-aws-latam")
 
         # 7. WAF v2 for API Gateway (REGIONAL scope)
         api_waf = wafv2.CfnWebACL(

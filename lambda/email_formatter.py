@@ -12,11 +12,6 @@ def format_otp_email(email, otp_code):
         "Si no solicitaste este codigo, ignora este correo."
     )
 
-    digits = ''.join(
-        f'<td style="width:44px;height:52px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;text-align:center;font-size:28px;font-weight:700;color:#111827;font-family:\'SF Mono\',Monaco,Consolas,monospace;">{d}</td>'
-        for d in otp_code
-    )
-
     body_html = f"""<!DOCTYPE html>
 <html lang="es">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
@@ -52,9 +47,13 @@ def format_otp_email(email, otp_code):
             </p>
 
             <!-- OTP Code -->
-            <table cellpadding="0" cellspacing="6" style="margin:0 auto 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
               <tr>
-                {digits}
+                <td align="center">
+                  <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px 24px;display:inline-block;">
+                    <span style="font-size:32px;font-weight:700;color:#111827;font-family:'SF Mono',Monaco,Consolas,monospace;letter-spacing:12px;">{otp_code}</span>
+                  </div>
+                </td>
               </tr>
             </table>
 

@@ -720,7 +720,7 @@ export default function App() {
     };
 
     // --- Final Submit (Create) ---
-    const handleFinalSubmit = async () => {
+    const handleFinalSubmit = async (retryCount = 0) => {
         const errors = validateForm(fetchedData);
         if (Object.keys(errors).length > 0) {
             setFormErrors(errors);
@@ -731,6 +731,8 @@ export default function App() {
         setApiError(null);
         try {
             if (API_GATEWAY_URL) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000);
                 const response = await fetch(API_GATEWAY_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -738,13 +740,17 @@ export default function App() {
                         action: 'create',
                         session_token: sessionToken,
                         data: fetchedData
-                    })
+                    }),
+                    signal: controller.signal
                 });
+                clearTimeout(timeoutId);
                 const result = await response.json();
                 if (result.success) {
                     resetAddFlow();
                     setView('directory');
                     loadProfiles();
+                } else if (result.error && result.error.includes('Session')) {
+                    setApiError('Tu sesion expiro. Vuelve a verificar tu email.');
                 } else {
                     setApiError(result.error || 'Error al crear el perfil');
                 }
@@ -754,8 +760,17 @@ export default function App() {
                 setView('directory');
             }
         } catch (error) {
+            if (retryCount < 1) {
+                console.warn("Reintentando guardar perfil...");
+                setIsSubmitting(false);
+                return handleFinalSubmit(retryCount + 1);
+            }
             console.error("Error saving profile:", error);
-            setApiError('Error de conexión al guardar el perfil.');
+            if (error.name === 'AbortError') {
+                setApiError('La solicitud tardo demasiado. Verifica tu conexion e intenta de nuevo.');
+            } else {
+                setApiError('Error de conexion al guardar el perfil. Intenta de nuevo.');
+            }
         }
         setIsSubmitting(false);
     };
@@ -790,7 +805,7 @@ export default function App() {
     };
 
     // --- Edit Flow: Submit Update ---
-    const handleEditSubmit = async () => {
+    const handleEditSubmit = async (retryCount = 0) => {
         const errors = validateForm(editProfileData);
         if (Object.keys(errors).length > 0) {
             setFormErrors(errors);
@@ -800,6 +815,8 @@ export default function App() {
         setEditLoading(true);
         setEditError(null);
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
             const res = await fetch(API_GATEWAY_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -807,18 +824,31 @@ export default function App() {
                     action: 'update',
                     session_token: sessionToken,
                     data: editProfileData
-                })
+                }),
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
             const data = await res.json();
             if (res.ok && data.success) {
                 resetEditFlow();
                 setView('directory');
                 loadProfiles();
+            } else if (data.error && data.error.includes('Session')) {
+                setEditError('Tu sesion expiro. Vuelve a verificar tu email.');
             } else {
                 setEditError(data.error || 'Error al actualizar el perfil.');
             }
-        } catch {
-            setEditError('Error de conexión al actualizar.');
+        } catch (error) {
+            if (retryCount < 1) {
+                console.warn("Reintentando actualizar perfil...");
+                setEditLoading(false);
+                return handleEditSubmit(retryCount + 1);
+            }
+            if (error.name === 'AbortError') {
+                setEditError('La solicitud tardo demasiado. Verifica tu conexion e intenta de nuevo.');
+            } else {
+                setEditError('Error de conexion al actualizar. Intenta de nuevo.');
+            }
         }
         setEditLoading(false);
     };
@@ -1282,6 +1312,15 @@ export default function App() {
                                             </p>
                                         </div>
                                     </div>
+
+                                    {!fetchedData.photoUrl && (
+                                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800 p-3 rounded-lg flex items-start gap-2.5 mb-6">
+                                            <AlertCircle size={14} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                                            <p className="text-amber-800 dark:text-amber-300 text-xs">
+                                                No pudimos recuperar tu foto de perfil. Esto suele ocurrir cuando la foto de LinkedIn no es publica.
+                                            </p>
+                                        </div>
+                                    )}
 
                                     {renderProfileForm(
                                         fetchedData,

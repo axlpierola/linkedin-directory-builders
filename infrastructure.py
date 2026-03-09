@@ -18,12 +18,14 @@ from constructs import Construct
 
 class SpaDirectoryStack(Stack):
 
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    def __init__(self, scope: Construct, construct_id: str, stage: str = "prod", domain_name: str = None, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        is_dev = stage == "dev"
 
         # Stack-level tags (inherited by all resources)
         Tags.of(self).add("Project", "directory-aws-latam")
-        Tags.of(self).add("Environment", "prod")
+        Tags.of(self).add("Environment", stage)
         Tags.of(self).add("Cost-Center", "aws-program-builder")
 
         # 1. DynamoDB Table
@@ -34,7 +36,7 @@ class SpaDirectoryStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
             time_to_live_attribute="ttl"
         )
-        Tags.of(table).add("Name", "database-directory-aws-latam")
+        Tags.of(table).add("Name", f"database-directory-aws-latam-{stage}")
 
         # 1b. GSI for email lookups
         table.add_global_secondary_index(
@@ -50,7 +52,7 @@ class SpaDirectoryStack(Stack):
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             encryption=s3.BucketEncryption.S3_MANAGED
         )
-        Tags.of(website_bucket).add("Name", "frontend-hosting-directory-aws-latam")
+        Tags.of(website_bucket).add("Name", f"frontend-hosting-directory-aws-latam-{stage}")
 
         # 3. CloudFront Distribution
         # Import existing ACM certificate for custom domain
@@ -58,6 +60,8 @@ class SpaDirectoryStack(Stack):
             self, "SiteCertificate",
             "arn:aws:acm:us-east-1:057563282754:certificate/8a1f03d7-87aa-4f90-b4d9-d38a92e10ec8"
         )
+
+        cf_domain_names = [domain_name] if domain_name else ["awsbuilder.dev"]
 
         distribution = cloudfront.Distribution(
             self, "WebsiteDistribution",
@@ -67,7 +71,7 @@ class SpaDirectoryStack(Stack):
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD,
                 cached_methods=cloudfront.CachedMethods.CACHE_GET_HEAD,
             ),
-            domain_names=["awsbuilder.dev"],
+            domain_names=cf_domain_names,
             certificate=certificate,
             minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
             default_root_object="index.html",
@@ -137,7 +141,7 @@ class SpaDirectoryStack(Stack):
         
         cfn_distribution = distribution.node.default_child
         cfn_distribution.web_acl_id = waf.attr_arn
-        Tags.of(distribution).add("Name", "cdn-directory-aws-latam")
+        Tags.of(distribution).add("Name", f"cdn-directory-aws-latam-{stage}")
 
 
         # 5. Lambda Function
@@ -153,7 +157,7 @@ class SpaDirectoryStack(Stack):
                 "CAPTCHA_SECRET_KEY": "placeholder-captcha-key"
             }
         )
-        Tags.of(backend_lambda).add("Name", "api-backend-directory-aws-latam")
+        Tags.of(backend_lambda).add("Name", f"api-backend-directory-aws-latam-{stage}")
 
         # Grant Lambda permissions to write to DynamoDB
         table.grant_read_write_data(backend_lambda)
@@ -176,7 +180,7 @@ class SpaDirectoryStack(Stack):
                 allow_methods=apigateway.Cors.ALL_METHODS
             )
         )
-        Tags.of(api).add("Name", "rest-api-directory-aws-latam")
+        Tags.of(api).add("Name", f"rest-api-directory-aws-latam-{stage}")
 
         # 7. WAF v2 for API Gateway (REGIONAL scope)
         api_waf = wafv2.CfnWebACL(

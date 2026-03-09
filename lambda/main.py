@@ -212,7 +212,9 @@ def scrape_linkedin(url):
             if og_image:
                 photo = og_image.group(1).replace('&amp;', '&')
                 if 'licdn.com' in photo or 'linkedin.com' in photo:
-                    mock_data['photoUrl'] = photo
+                    # Filter out LinkedIn's generic placeholder avatar
+                    if 'static.licdn.com/aero-v1/sc/h/' not in photo:
+                        mock_data['photoUrl'] = photo
 
             # Extract OG title
             og_title = re.search(r'<meta\s+(?:property|name)="og:title"\s+content="([^"]+)"', html)

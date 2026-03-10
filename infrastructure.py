@@ -265,7 +265,7 @@ class SpaDirectoryStack(Stack):
             display_name=f"Lambda Errors Alert - {stage}"
         )
         alarm_topic.add_subscription(
-            subs.EmailSubscription("admin@awsbuilder.dev")
+            subs.EmailSubscription("axlpierola@gmail.com")
         )
 
         # CloudWatch Alarm: >= 3 errors in 5 minutes

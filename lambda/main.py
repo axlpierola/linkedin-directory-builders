@@ -124,8 +124,6 @@ def handler(event, context):
             return handle_verify_otp(body, headers)
         elif action == 'update':
             return handle_update(body, headers)
-        elif action == 'lookup':
-            return handle_lookup(body, headers)
         elif action == 'give_karma':
             return handle_give_karma(body, headers)
         elif action == 'feedback':
@@ -359,10 +357,16 @@ def handle_list(body, headers):
             "name_query": name_query,
         })
 
+    # Strip sensitive fields before returning
+    safe_fields = ['pk', 'name', 'role', 'company', 'photoUrl', 'linkedinUrl',
+                   'builder_type', 'builder_categories', 'country', 'social_links',
+                   'karma_score', 'created_at', 'updated_at', 'slug']
+    sanitized = [{k: item[k] for k in safe_fields if k in item} for item in items]
+
     return {
         'statusCode': 200,
         'headers': headers,
-        'body': json.dumps({'items': items}, cls=DecimalEncoder)
+        'body': json.dumps({'items': sanitized}, cls=DecimalEncoder)
     }
 
 OTP_RATE_LIMIT_MAX = 5
@@ -643,50 +647,6 @@ def handle_update(body, headers):
         'body': json.dumps({'success': True, 'item': updated_item}, cls=DecimalEncoder)
     }
 
-
-def handle_lookup(body, headers):
-    identifier = body.get('identifier', '').strip()
-    if not identifier:
-        return {
-            'statusCode': 400,
-            'headers': headers,
-            'body': json.dumps({'error': 'Missing identifier'})
-        }
-
-    table = dynamodb.Table(TABLE_NAME)
-
-    if '@' in identifier:
-        # Looks like an email — query GSI
-        gsi_result = table.query(
-            IndexName='email-index',
-            KeyConditionExpression=boto3.dynamodb.conditions.Key('email').eq(identifier),
-            Limit=1
-        )
-        items = gsi_result.get('Items', [])
-        if items:
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps({'success': True, 'email': items[0]['email']})
-            }
-    else:
-        # Looks like a URL — scan for matching linkedinUrl
-        scan_result = table.scan(
-            FilterExpression=boto3.dynamodb.conditions.Attr('linkedinUrl').eq(identifier)
-        )
-        items = scan_result.get('Items', [])
-        if items:
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps({'success': True, 'email': items[0].get('email', '')})
-            }
-
-    return {
-        'statusCode': 404,
-        'headers': headers,
-        'body': json.dumps({'error': 'No profile found for this identifier'})
-    }
 
 def handle_give_karma(body, headers):
     # Validate session token and extract giver email

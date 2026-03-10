@@ -79,6 +79,11 @@ def handler(event, context):
             'body': ''
         }
 
+    # Handle EventBridge direct invocations (no httpMethod)
+    http_method = event.get('httpMethod', '')
+    if not http_method and event.get('action') == 'batch_resync_photos':
+        return handle_batch_resync_photos(event)
+
     try:
         body = json.loads(event.get('body') or '{}')
         action = body.get('action')
@@ -116,6 +121,8 @@ def handler(event, context):
             return handle_give_karma(body, headers)
         elif action == 'feedback':
             return handle_feedback(body, headers)
+        elif action == 'resync_photo':
+            return handle_resync_photo(body, headers)
         else:
             return {
                 'statusCode': 400,
@@ -807,3 +814,129 @@ def handle_feedback(body, headers):
         'headers': headers,
         'body': json.dumps({'success': True})
     }
+
+
+def fetch_linkedin_photo(url):
+    """Obtiene la URL de og:image de un perfil de LinkedIn.
+    Retorna la URL de la foto o None si no se puede obtener.
+    Filtra placeholders genericos de LinkedIn.
+    """
+    if not url or not isinstance(url, str) or not url.strip():
+        return None
+    data = scrape_linkedin(url)
+    photo = data.get('photoUrl', '')
+    return photo if photo else None
+
+
+def handle_resync_photo(body, headers):
+    """Resync de foto individual: re-obtiene og:image de LinkedIn."""
+    session_token = body.get('session_token')
+    session_data, err = validate_session(session_token)
+    if err:
+        return {
+            'statusCode': err['statusCode'],
+            'headers': headers,
+            'body': json.dumps({'error': err['error']})
+        }
+
+    email = session_data.get('email')
+    table = dynamodb.Table(TABLE_NAME)
+
+    gsi_result = table.query(
+        IndexName='email-index',
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('email').eq(email),
+        FilterExpression=boto3.dynamodb.conditions.Attr('pk').begins_with('PROFILE#'),
+        Limit=10
+    )
+    items = gsi_result.get('Items', [])
+    if not items:
+        return {
+            'statusCode': 404,
+            'headers': headers,
+            'body': json.dumps({'error': 'No profile found for this email'})
+        }
+
+    profile = items[0]
+    linkedin_url = profile.get('linkedinUrl', '')
+    if not linkedin_url:
+        return {
+            'statusCode': 400,
+            'headers': headers,
+            'body': json.dumps({'error': 'Profile does not have a LinkedIn URL'})
+        }
+
+    new_photo = fetch_linkedin_photo(linkedin_url)
+    current_photo = profile.get('photoUrl', '')
+
+    if new_photo and new_photo != current_photo:
+        table.update_item(
+            Key={'pk': profile['pk']},
+            UpdateExpression='SET photoUrl = :photo, updated_at = :ts',
+            ExpressionAttributeValues={
+                ':photo': new_photo,
+                ':ts': str(int(time.time()))
+            }
+        )
+        return {
+            'statusCode': 200,
+            'headers': headers,
+            'body': json.dumps({'success': True, 'photoUrl': new_photo, 'updated': True})
+        }
+
+    return {
+        'statusCode': 200,
+        'headers': headers,
+        'body': json.dumps({
+            'success': True,
+            'photoUrl': current_photo,
+            'updated': False,
+            'message': 'La foto no cambio o no se pudo obtener una nueva.'
+        })
+    }
+
+
+def handle_batch_resync_photos(event):
+    """Resync masivo de fotos: invocado por EventBridge diariamente."""
+    table = dynamodb.Table(TABLE_NAME)
+
+    response = table.scan()
+    all_items = response.get('Items', [])
+    while response.get('LastEvaluatedKey'):
+        response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+        all_items.extend(response.get('Items', []))
+
+    profiles = [
+        item for item in all_items
+        if item.get('pk', '').startswith('PROFILE#')
+        and item.get('linkedinUrl', '').strip()
+    ]
+
+    updated = 0
+    unchanged = 0
+    errors = 0
+
+    for profile in profiles:
+        try:
+            new_photo = fetch_linkedin_photo(profile['linkedinUrl'])
+            current_photo = profile.get('photoUrl', '')
+
+            if new_photo and new_photo != current_photo:
+                table.update_item(
+                    Key={'pk': profile['pk']},
+                    UpdateExpression='SET photoUrl = :photo, updated_at = :ts',
+                    ExpressionAttributeValues={
+                        ':photo': new_photo,
+                        ':ts': str(int(time.time()))
+                    }
+                )
+                updated += 1
+                print(f"Updated photo for {profile['pk']}")
+            else:
+                unchanged += 1
+        except Exception as e:
+            errors += 1
+            print(f"Error resyncing photo for {profile['pk']}: {e}")
+
+    summary = {'updated': updated, 'unchanged': unchanged, 'errors': errors, 'total': len(profiles)}
+    print(f"Batch resync complete: {json.dumps(summary)}")
+    return summary

@@ -13,6 +13,12 @@ from aws_cdk import (
     aws_wafv2 as wafv2,
     aws_iam as iam,
     aws_certificatemanager as acm,
+    aws_events as events,
+    aws_events_targets as targets,
+    aws_sns as sns,
+    aws_sns_subscriptions as subs,
+    aws_cloudwatch as cloudwatch,
+    aws_cloudwatch_actions as cw_actions,
 )
 from constructs import Construct
 
@@ -33,7 +39,8 @@ class SpaDirectoryStack(Stack):
             self, "DirectoryBuildersTable",
             partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            removal_policy=RemovalPolicy.DESTROY,
+            point_in_time_recovery=True,
+            removal_policy=RemovalPolicy.RETAIN if not is_dev else RemovalPolicy.DESTROY,
             time_to_live_attribute="ttl"
         )
         Tags.of(table).add("Name", f"database-directory-aws-latam-{stage}")
@@ -150,7 +157,10 @@ class SpaDirectoryStack(Stack):
             runtime=_lambda.Runtime.PYTHON_3_9,
             handler="main.handler",
             code=_lambda.Code.from_asset("lambda"),
-            timeout=Duration.seconds(15),
+            timeout=Duration.seconds(120),
+            current_version_options=_lambda.VersionOptions(
+                removal_policy=RemovalPolicy.RETAIN
+            ),
             environment={
                 "TABLE_NAME": table.table_name,
                 "SES_SENDER_EMAIL": "noreply@awsbuilder.dev",
@@ -170,10 +180,13 @@ class SpaDirectoryStack(Stack):
             )
         )
 
+        # Lambda alias 'live' for rollback support
+        live_alias = backend_lambda.current_version.add_alias("live")
+
         # 6. API Gateway
         api = apigateway.LambdaRestApi(
             self, "DirectoryApi",
-            handler=backend_lambda,
+            handler=live_alias,
             proxy=True,
             default_cors_preflight_options=apigateway.CorsOptions(
                 allow_origins=apigateway.Cors.ALL_ORIGINS,
@@ -235,6 +248,42 @@ class SpaDirectoryStack(Stack):
             web_acl_arn=api_waf.attr_arn
         )
 
+        # EventBridge rule: resync diario de fotos (4:00 AM UTC)
+        events.Rule(
+            self, "DailyPhotoResyncRule",
+            schedule=events.Schedule.cron(hour="4", minute="0"),
+            targets=[targets.LambdaFunction(
+                backend_lambda,
+                event=events.RuleTargetInput.from_object({
+                    "action": "batch_resync_photos"
+                })
+            )]
+        )
+
+        # SNS Topic for Lambda error alerts
+        alarm_topic = sns.Topic(self, "LambdaAlarmTopic",
+            display_name=f"Lambda Errors Alert - {stage}"
+        )
+        alarm_topic.add_subscription(
+            subs.EmailSubscription("admin@awsbuilder.dev")
+        )
+
+        # CloudWatch Alarm: >= 3 errors in 5 minutes
+        error_alarm = backend_lambda.metric_errors(
+            period=Duration.minutes(5),
+            statistic="Sum"
+        ).create_alarm(
+            self, "LambdaErrorAlarm",
+            alarm_name=f"lambda-errors-{stage}",
+            threshold=3,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        error_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+        error_alarm.add_ok_action(cw_actions.SnsAction(alarm_topic))
+
         # Outputs
         CfnOutput(self, "FrontendURL", value=f"https://{distribution.distribution_domain_name}")
         CfnOutput(self, "ApiEndpoint", value=api.url)
+        CfnOutput(self, "LambdaAliasArn", value=live_alias.function_arn)

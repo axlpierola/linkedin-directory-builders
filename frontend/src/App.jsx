@@ -781,22 +781,20 @@ export default function App() {
             const res = await fetch(API_GATEWAY_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'list' })
+                body: JSON.stringify({ action: 'get_my_profile', session_token: token })
             });
             const data = await res.json();
-            if (data.items) {
-                const profile = data.items.find(p => p.email === email);
-                if (profile) {
-                    setEditProfileData({
-                        ...profile,
-                        social_links: profile.social_links || { github: '', twitter: '', medium: '', devto: '', youtube: '', aws_builder: '', website: '' },
-                        builder_categories: profile.builder_categories || [],
-                    });
-                    setEditStep('form');
-                } else {
-                    setEditError('No tienes perfil registrado. Registrate primero.');
-                    setEditStep('lookup');
-                }
+            if (res.ok && data.success && data.profile) {
+                const profile = data.profile;
+                setEditProfileData({
+                    ...profile,
+                    social_links: profile.social_links || { github: '', twitter: '', medium: '', devto: '', youtube: '', aws_builder: '', website: '' },
+                    builder_categories: profile.builder_categories || [],
+                });
+                setEditStep('form');
+            } else {
+                setEditError('No tienes perfil registrado. Registrate primero.');
+                setEditStep('lookup');
             }
         } catch {
             setEditError('Error al cargar los datos del perfil.');

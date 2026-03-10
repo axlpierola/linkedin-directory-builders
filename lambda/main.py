@@ -126,6 +126,8 @@ def handler(event, context):
             return handle_update(body, headers)
         elif action == 'give_karma':
             return handle_give_karma(body, headers)
+        elif action == 'get_my_profile':
+            return handle_get_my_profile(body, headers)
         elif action == 'feedback':
             return handle_feedback(body, headers)
         elif action == 'resync_photo':
@@ -645,6 +647,40 @@ def handle_update(body, headers):
         'statusCode': 200,
         'headers': headers,
         'body': json.dumps({'success': True, 'item': updated_item}, cls=DecimalEncoder)
+    }
+
+
+def handle_get_my_profile(body, headers):
+    """Return the authenticated user's own profile (includes email)."""
+    session_token = body.get('session_token')
+    session_data, err = validate_session(session_token)
+    if err:
+        return {
+            'statusCode': err['statusCode'],
+            'headers': headers,
+            'body': json.dumps({'error': err['error']})
+        }
+
+    email = session_data.get('email')
+    table = dynamodb.Table(TABLE_NAME)
+    gsi_result = table.query(
+        IndexName='email-index',
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('email').eq(email),
+        FilterExpression=boto3.dynamodb.conditions.Attr('pk').begins_with('PROFILE#'),
+        Limit=1
+    )
+    items = gsi_result.get('Items', [])
+    if not items:
+        return {
+            'statusCode': 404,
+            'headers': headers,
+            'body': json.dumps({'error': 'No profile found'})
+        }
+
+    return {
+        'statusCode': 200,
+        'headers': headers,
+        'body': json.dumps({'success': True, 'profile': items[0]}, cls=DecimalEncoder)
     }
 
 

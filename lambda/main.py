@@ -667,7 +667,6 @@ def handle_get_my_profile(body, headers):
         IndexName='email-index',
         KeyConditionExpression=boto3.dynamodb.conditions.Key('email').eq(email),
         FilterExpression=boto3.dynamodb.conditions.Attr('pk').begins_with('PROFILE#'),
-        Limit=1
     )
     items = gsi_result.get('Items', [])
     if not items:

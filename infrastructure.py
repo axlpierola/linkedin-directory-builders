@@ -19,6 +19,8 @@ from aws_cdk import (
     aws_sns_subscriptions as subs,
     aws_cloudwatch as cloudwatch,
     aws_cloudwatch_actions as cw_actions,
+    aws_sqs as sqs,
+    aws_lambda_event_sources as lambda_event_sources,
 )
 from constructs import Construct
 
@@ -151,7 +153,15 @@ class SpaDirectoryStack(Stack):
         Tags.of(distribution).add("Name", f"cdn-directory-aws-latam-{stage}")
 
 
-        # 5. Lambda Function
+        # 5. SQS Queue for photo resync (processes one profile at a time)
+        photo_resync_queue = sqs.Queue(
+            self, "PhotoResyncQueue",
+            visibility_timeout=Duration.seconds(130),
+            receive_message_wait_time=Duration.seconds(5),
+            retention_period=Duration.days(1),
+        )
+
+        # 6. Lambda Function
         backend_lambda = _lambda.Function(
             self, "BackendHandler",
             runtime=_lambda.Runtime.PYTHON_3_9,
@@ -164,10 +174,24 @@ class SpaDirectoryStack(Stack):
             environment={
                 "TABLE_NAME": table.table_name,
                 "SES_SENDER_EMAIL": "noreply@awsbuilder.dev",
-                "CAPTCHA_SECRET_KEY": "placeholder-captcha-key"
+                "CAPTCHA_SECRET_KEY": "placeholder-captcha-key",
+                "PHOTO_RESYNC_QUEUE_URL": photo_resync_queue.queue_url,
             }
         )
         Tags.of(backend_lambda).add("Name", f"api-backend-directory-aws-latam-{stage}")
+
+        # Grant Lambda permissions to send/receive from SQS
+        photo_resync_queue.grant_send_messages(backend_lambda)
+        photo_resync_queue.grant_consume_messages(backend_lambda)
+
+        # SQS event source: process one message at a time with 10s delay between batches
+        backend_lambda.add_event_source(
+            lambda_event_sources.SqsEventSource(
+                photo_resync_queue,
+                batch_size=1,
+                max_batching_window=Duration.seconds(10),
+            )
+        )
 
         # Grant Lambda permissions to write to DynamoDB
         table.grant_read_write_data(backend_lambda)

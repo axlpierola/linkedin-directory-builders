@@ -84,6 +84,15 @@ def handler(event, context):
     if not http_method and event.get('action') == 'batch_resync_photos':
         return handle_batch_resync_photos(event)
 
+    # Handle SQS events (photo resync queue)
+    if not http_method and 'Records' in event:
+        for record in event['Records']:
+            if record.get('eventSource') == 'aws:sqs':
+                msg = json.loads(record['body'])
+                if msg.get('action') == 'resync_single_photo':
+                    handle_sqs_photo_resync(msg)
+        return {'statusCode': 200}
+
     try:
         body = json.loads(event.get('body') or '{}')
         action = body.get('action')
@@ -896,8 +905,14 @@ def handle_resync_photo(body, headers):
 
 
 def handle_batch_resync_photos(event):
-    """Resync masivo de fotos: invocado por EventBridge diariamente."""
+    """Resync masivo de fotos: escanea perfiles y encola cada uno en SQS."""
     table = dynamodb.Table(TABLE_NAME)
+    sqs_client = boto3.client('sqs')
+    queue_url = os.environ.get('PHOTO_RESYNC_QUEUE_URL', '')
+
+    if not queue_url:
+        print("ERROR: PHOTO_RESYNC_QUEUE_URL not configured")
+        return {'error': 'Queue URL not configured'}
 
     response = table.scan()
     all_items = response.get('Items', [])
@@ -911,32 +926,60 @@ def handle_batch_resync_photos(event):
         and item.get('linkedinUrl', '').strip()
     ]
 
-    updated = 0
-    unchanged = 0
-    errors = 0
-
-    for profile in profiles:
+    enqueued = 0
+    for i, profile in enumerate(profiles):
         try:
-            new_photo = fetch_linkedin_photo(profile['linkedinUrl'])
-            current_photo = profile.get('photoUrl', '')
-
-            if new_photo and new_photo != current_photo:
-                table.update_item(
-                    Key={'pk': profile['pk']},
-                    UpdateExpression='SET photoUrl = :photo, updated_at = :ts',
-                    ExpressionAttributeValues={
-                        ':photo': new_photo,
-                        ':ts': str(int(time.time()))
-                    }
-                )
-                updated += 1
-                print(f"Updated photo for {profile['pk']}")
-            else:
-                unchanged += 1
+            sqs_client.send_message(
+                QueueUrl=queue_url,
+                MessageBody=json.dumps({
+                    'action': 'resync_single_photo',
+                    'pk': profile['pk'],
+                    'linkedinUrl': profile['linkedinUrl'],
+                }),
+                DelaySeconds=min(i * 10, 900),  # 10s entre cada uno, max 15min
+            )
+            enqueued += 1
         except Exception as e:
-            errors += 1
-            print(f"Error resyncing photo for {profile['pk']}: {e}")
+            print(f"Error enqueuing {profile['pk']}: {e}")
 
-    summary = {'updated': updated, 'unchanged': unchanged, 'errors': errors, 'total': len(profiles)}
-    print(f"Batch resync complete: {json.dumps(summary)}")
+    summary = {'enqueued': enqueued, 'total': len(profiles)}
+    print(f"Batch resync enqueued: {json.dumps(summary)}")
     return summary
+
+
+def handle_sqs_photo_resync(msg):
+    """Procesa un solo perfil de la cola SQS: actualiza foto desde LinkedIn."""
+    table = dynamodb.Table(TABLE_NAME)
+    pk = msg.get('pk')
+    linkedin_url = msg.get('linkedinUrl')
+
+    if not pk or not linkedin_url:
+        print(f"Invalid SQS message: {msg}")
+        return
+
+    try:
+        new_photo = fetch_linkedin_photo(linkedin_url)
+        if not new_photo:
+            print(f"No photo found for {pk}")
+            return
+
+        # Get current photo to compare
+        result = table.get_item(Key={'pk': pk})
+        item = result.get('Item', {})
+        current_photo = item.get('photoUrl', '')
+
+        if new_photo != current_photo:
+            table.update_item(
+                Key={'pk': pk},
+                UpdateExpression='SET photoUrl = :photo, updated_at = :ts',
+                ExpressionAttributeValues={
+                    ':photo': new_photo,
+                    ':ts': str(int(time.time()))
+                }
+            )
+            print(f"Updated photo for {pk}")
+        else:
+            print(f"Photo unchanged for {pk}")
+    except Exception as e:
+        print(f"Error resyncing photo for {pk}: {e}")
+        raise  # Re-raise so SQS retries

@@ -486,6 +486,9 @@ export default function App() {
     const [editError, setEditError] = useState(null);
     const [editProfileData, setEditProfileData] = useState(null);
 
+    // Resync photo state
+    const [resyncLoading, setResyncLoading] = useState(false);
+    const [resyncMsg, setResyncMsg] = useState(null);
 
     // Feature Vote
     const [hasVotedCustomPhoto, setHasVotedCustomPhoto] = useState(false);
@@ -849,6 +852,36 @@ export default function App() {
             }
         }
         setEditLoading(false);
+    };
+
+    // --- Resync Photo ---
+    const handleResyncPhoto = async () => {
+        setResyncLoading(true);
+        setResyncMsg(null);
+        try {
+            const res = await fetch(API_GATEWAY_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'resync_photo', session_token: sessionToken })
+            });
+            const data = await res.json();
+            if (res.status === 401) {
+                setResyncMsg({ type: 'error', text: 'Tu sesion expiro. Vuelve a verificar tu email.' });
+            } else if (res.ok && data.success) {
+                if (data.updated) {
+                    setEditProfileData(prev => ({ ...prev, photoUrl: data.photoUrl }));
+                    setResyncMsg({ type: 'success', text: 'Foto actualizada.' });
+                } else {
+                    setResyncMsg({ type: 'info', text: 'No se encontro una foto nueva en LinkedIn.' });
+                }
+            } else {
+                setResyncMsg({ type: 'error', text: 'No se pudo actualizar la foto.' });
+            }
+        } catch {
+            setResyncMsg({ type: 'error', text: 'No se pudo actualizar la foto.' });
+        }
+        setResyncLoading(false);
+        setTimeout(() => setResyncMsg(null), 5000);
     };
 
 
@@ -1430,6 +1463,21 @@ export default function App() {
                                     </h3>
                                     <div className="max-w-sm mx-auto lg:mx-0 w-full">
                                         <ProfileCard {...editProfileData} isPreview={true} />
+                                    </div>
+                                    <div className="max-w-sm mx-auto lg:mx-0 w-full mt-3 text-center">
+                                        <button
+                                            onClick={handleResyncPhoto}
+                                            disabled={resyncLoading}
+                                            className="text-xs text-gray-500 hover:text-orange-600 dark:text-gray-400 dark:hover:text-orange-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                                        >
+                                            {resyncLoading ? <Loader className="animate-spin" size={12} /> : <RefreshCw size={12} />}
+                                            Sincronizar foto desde LinkedIn
+                                        </button>
+                                        {resyncMsg && (
+                                            <p className={`text-xs mt-2 ${resyncMsg.type === 'success' ? 'text-green-600 dark:text-green-400' : resyncMsg.type === 'error' ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'}`}>
+                                                {resyncMsg.text}
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
                             </div>

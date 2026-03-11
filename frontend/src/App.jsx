@@ -653,7 +653,7 @@ export default function App() {
                 const response = await fetch(API_GATEWAY_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'preview', linkedinUrl: normalizedUrl })
+                    body: JSON.stringify({ action: 'preview', linkedinUrl: normalizedUrl, session_token: sessionToken })
                 });
 
                 if (!response.ok) throw new Error('Error en conexión con servidor');

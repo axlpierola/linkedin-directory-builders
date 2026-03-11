@@ -31,6 +31,15 @@ SES_SENDER_EMAIL = os.environ.get('SES_SENDER_EMAIL')
 CAPTCHA_SECRET_KEY = os.environ.get('CAPTCHA_SECRET_KEY')
 ses_client = boto3.client('ses')
 
+SAFE_PROFILE_FIELDS = ['pk', 'name', 'role', 'company', 'photoUrl', 'linkedinUrl',
+                        'builder_type', 'builder_categories', 'country', 'social_links',
+                        'karma_score', 'created_at', 'updated_at', 'slug']
+
+
+def _sanitize_profile(item):
+    """Strip sensitive fields (email, etc.) from a profile before returning to client."""
+    return {k: item[k] for k in SAFE_PROFILE_FIELDS if k in item}
+
 def _extract_client_ip(event):
     """Extract client IP from API Gateway event.
 
@@ -64,10 +73,21 @@ def validate_captcha(captcha_response):
 
 
 def handler(event, context):
-    print("Event:", json.dumps(event))
+    # Log action only — avoid logging session tokens or PII
+    raw_body = event.get('body') or '{}'
+    try:
+        log_action = json.loads(raw_body).get('action', 'unknown')
+    except Exception:
+        log_action = 'parse_error'
+    print(f"Request: action={log_action}, method={event.get('httpMethod', 'N/A')}")
     
+    # Dynamic CORS: allow only our domains
+    allowed_origins = {'https://awsbuilder.dev', 'https://dev.awsbuilder.dev'}
+    request_origin = (event.get('headers') or {}).get('origin') or (event.get('headers') or {}).get('Origin') or ''
+    cors_origin = request_origin if request_origin in allowed_origins else 'https://awsbuilder.dev'
+
     headers = {
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': cors_origin,
         'Access-Control-Allow-Headers': 'Content-Type',
         'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
     }
@@ -148,6 +168,16 @@ def handler(event, context):
         }
 
 def handle_preview(body, headers):
+    # Require session token to prevent abuse as open LinkedIn scraping proxy
+    session_token = body.get('session_token')
+    session_data, err = validate_session(session_token)
+    if err:
+        return {
+            'statusCode': err['statusCode'],
+            'headers': headers,
+            'body': json.dumps({'error': err['error']})
+        }
+
     linkedin_url = body.get('linkedinUrl')
     if not linkedin_url:
         return {
@@ -303,8 +333,9 @@ def handle_create(body, headers):
 
     # Store profile
     timestamp = str(int(time.time()))
+    profile_id = f"{timestamp}-{uuid.uuid4().hex[:8]}"
     item = {
-        'pk': f"PROFILE#{timestamp}",
+        'pk': f"PROFILE#{profile_id}",
         'email': email,
         'name': data.get('name', ''),
         'role': data.get('role', ''),
@@ -334,7 +365,7 @@ def handle_create(body, headers):
     return {
         'statusCode': 200,
         'headers': headers,
-        'body': json.dumps({'success': True, 'item': item}, cls=DecimalEncoder)
+        'body': json.dumps({'success': True, 'item': _sanitize_profile(item)}, cls=DecimalEncoder)
     }
 
 def handle_list(body, headers):
@@ -359,11 +390,7 @@ def handle_list(body, headers):
             "name_query": name_query,
         })
 
-    # Strip sensitive fields before returning
-    safe_fields = ['pk', 'name', 'role', 'company', 'photoUrl', 'linkedinUrl',
-                   'builder_type', 'builder_categories', 'country', 'social_links',
-                   'karma_score', 'created_at', 'updated_at', 'slug']
-    sanitized = [{k: item[k] for k in safe_fields if k in item} for item in items]
+    sanitized = [_sanitize_profile(item) for item in items]
 
     return {
         'statusCode': 200,
@@ -646,7 +673,7 @@ def handle_update(body, headers):
     return {
         'statusCode': 200,
         'headers': headers,
-        'body': json.dumps({'success': True, 'item': updated_item}, cls=DecimalEncoder)
+        'body': json.dumps({'success': True, 'item': _sanitize_profile(updated_item)}, cls=DecimalEncoder)
     }
 
 
